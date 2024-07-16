@@ -1,0 +1,19 @@
+{% extends "base.html" %}
+{% block title %}Question{% endblock %}
+
+{% block content %}
+<p> Add new song, sequence, or stop?</p>
+<form action='#' method='post'>
+    <p><input type="submit" name="submit" value="Add New Sequence"/><br></p>
+    <p><input type="submit" name="submit" value="Stop" /><br></p>
+</form>
+
+<p> Here are the track sequences currently saved: </p>
+<form action='#' method='post'>
+<ul>
+{% for item in data %}
+    <li>{{item}} <input type="submit" name='{{item}}' value="Add New Song"/> <input type="submit" name='{{item}}' value="Delete sequence"/> <br></li>
+{% endfor %}
+</ul>
+</form>
+{% endblock %}

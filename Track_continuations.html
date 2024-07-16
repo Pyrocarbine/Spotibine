@@ -1,0 +1,13 @@
+{% extends "base.html" %}
+{% block title %}Following Tracks{% endblock %}
+
+{% block content %}
+<p> Enter Next Track: </p>
+<form action='#' method='post'>
+    <p>Track Name:</p>
+    <p><input type="text" name="following_song" /></p>
+    <p>Artist:</p>
+    <p><input type="text" name="following_artist" /></p>
+    <p><input type="submit" value="submit" /></p>
+</form>
+{% endblock %}
