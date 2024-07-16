@@ -1,0 +1,19 @@
+{% extends "base.html" %}
+{% block title %}Loading{% endblock %}
+
+{% block content %}
+<h3> CombineMaster is Running! </h3>
+<p> Here are the track sequences currently saved: </p>
+<form action='#' method='post'>
+<ul>
+{% for item in data %}
+    <li>{{item}} <input type="submit" name='{{item}}' value="Delete sequence"/> <br></li>
+{% endfor %}
+</ul>
+</form>
+
+<p> Add new track sequence? </p>
+<form action='#' method='post'>
+    <p><input type="submit" name="submit" value="Request New Song Sequence"/><br></p>
+</form>
+{% endblock %}
