@@ -3,7 +3,8 @@
     The program here will allow the user to automate these successions.
 
 ### How It Works
-    This program uses the Spotify API, and the user must create their own Spotify API app to gain access to a client ID and a client secret required for the program.
+    This program uses the Spotify Web API, and the user must create their own Spotify API app to gain access to a client ID and a client secret required for the program.
+    You can create one from the dashboard at developer.spotify.com. 
     Once the client_id and client_secret are provided in a .env file, the user can run main.py.
     
     When the first track in a sequence is played, the program will add the following songs to the queue.
