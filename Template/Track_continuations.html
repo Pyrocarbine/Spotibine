@@ -2,6 +2,10 @@
 {% block title %}Following Tracks{% endblock %}
 
 {% block content %}
+{% if data[1]==1 %}
+<p style="color:#FF0000"> Error: Song is not found </p>
+{% endif %}
+<p> Current Sequence: {{data[0]}}</p>
 <p> Enter Next Track: </p>
 <form action='#' method='post'>
     <p>Track Name:</p>
