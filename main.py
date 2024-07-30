@@ -1,14 +1,12 @@
 from dotenv import load_dotenv
 import os
-import base64
 from requests import post, get
-import json
 import urllib.parse
 from flask import Flask, redirect, request, jsonify, render_template, url_for
-from datetime import datetime, timedelta
+from datetime import datetime
 import time
 # import for loading a html webpage while the api is running
-from threading import Thread
+import threading
 
 
 load_dotenv()
@@ -30,12 +28,22 @@ track_sequences = {}
 track_presentation = []
 # link track_sequences and track_presentation
 link_seq = {}
+# if this is true, then '/processing has not been run yet'
+session['processing-ran'] = False
 
 
 # First Page
 @app.route('/')
 def index():
-    return "Welcome to my Spotify App <a href='/login'>Login With Spotify</a>"
+    if 'access_token' not in session:
+        return ("<h3> Welcome to my Spotify App. </h3>" 
+                "<p> To begin, we will like request some permissions for your Spotify Account "
+                "<br><br> Please <a href='/login'>Login With Spotify</a></p>")
+    else:
+        if session['processing-ran']:
+            return redirect("/main-page")
+        else:
+            return redirect('/ask-user-for-more')
 
 
 # Redirects to login page
@@ -152,6 +160,7 @@ def find_first_track():
         track_sequences[session['first_track']] = []
         # update track presentation
         track_presentation.append(first_response.json()['tracks']['items'][0]['name'])
+        link_seq[track_presentation[-1]] = session['first_track']
         return redirect('/find-next-track')
     else:
         return render_template("Track_inputs.html",data=0)
@@ -212,52 +221,28 @@ def ask_user_for_more():
             return redirect('find-next-track')
 
 
-# create a thread that will run a process, while our main program is displaying an HTML file
-@app.route('/processing')
-def processing():
-    # run application by calling detect_track
-    session['current-track'] = ""
-    thr = Thread(target=detect_track)
-    thr.start()
-    return redirect('/main-page')
-
-
-# the main page will continue displaying our track sequences, the user can still add or delete sequence
-@app.route('/main-page', methods=['POST', 'GET'])
-def main_page():
-    if request.method == "POST":
-        if 'submit' in request.form and request.form['submit'] == 'Request New Song Sequence':
-            return redirect('/find-track')
-        else:
-            for item in track_presentation:
-                if item in request.form and request.form[item] == "Delete sequence":
-                    delete_seq = link_seq[item]
-                    track_sequences.pop(delete_seq)
-                    track_presentation.remove(item)
-                    return redirect('/main-page')
-    else:
-        return render_template("Loading_page.html", data=track_presentation)
-
-
 # if a first song in a sequence is detected, then call add_track()
 @app.route('/detect-track')
 def detect_track():
-    while True:
+    while not session['stop-thread']:
         refresh_info()
         headers = find_auth()
 
         response = get(api_base_url + 'me/player/currently-playing', headers=headers)
         if response.status_code == 204:
-            time.sleep(5)
+            time.sleep(2)
             continue
         encoded = response.json()
 
+        if session['started'] and session['previous-track'] == encoded['item']['uri']:
+            time.sleep(2)
+            continue
         if session['current-track'] != encoded['item']['uri']:
             session['current-track'] = encoded['item']['uri']
 
             if session['current-track'] in track_sequences:
                 add_track()
-        time.sleep(5)
+        time.sleep(2)
 
 
 # add_track put the following tracks into the queue
@@ -271,30 +256,73 @@ def add_track():
         'client_id': client_id,
         'client_secret': client_secret
     }
-
-    for song in track_sequences[session['current-track']]:
-        post(api_base_url + "me/player/queue" + "?uri=" + song, headers=headers, data=requirements)
     encoded = get(api_base_url + 'me/player/currently-playing', headers=headers).json()['item']['uri']
     current_queue = []
-    # current_queue will store in the songs that are originally in the Spotify queue
+    for song in track_sequences[session['current-track']]:
+        post(api_base_url + "me/player/queue" + "?uri=" + song, headers=headers, data=requirements)
+    while encoded == session['current-track']:
+        if session['stop-thread']:
+            return
+        time.sleep(1)
+        encoded = get(api_base_url + 'me/player/currently-playing', headers=headers).json()
+        if not encoded['item']:
+            break
+        encoded = encoded['item']['uri']
     while encoded != track_sequences[session['current-track']][0]:
-        if encoded == session['current-track']:
-            time.sleep(1)
-            encoded = get(api_base_url + 'me/player/currently-playing', headers=headers).json()['item']['uri']
-            continue
         current_queue.append(encoded)
         # skip to next track in queue
         post(api_base_url + "me/player/next", headers=headers, data=requirements)
-        encoded = get(api_base_url + 'me/player/currently-playing', headers=headers).json()['item']['uri']
-    session['current-track'] = encoded
+        encoded = get(api_base_url + 'me/player/currently-playing', headers=headers).json()
+        if not encoded['item']:
+            break
+        encoded = encoded['item']['uri']
     for uri in current_queue:
         post(api_base_url + "me/player/queue" + "?uri=" + uri, headers=headers, data=requirements)
+
+
+thr = threading.Thread()
+session['started'] = False
+
+
+# create a thread that will run a process, while our main program is displaying an HTML file
+@app.route('/processing')
+def processing():
+    # run application by calling detect_track
+    session['current-track'] = ""
+    session['stop-thread'] = False
+    global thr
+    thr = threading.Thread(target=detect_track)
+    thr.start()
+    return redirect('/main-page')
+
+
+# the main page will continue displaying our track sequences, the user can still add or delete sequence
+@app.route('/main-page', methods=['POST', 'GET'])
+def main_page():
+    if request.method == "POST":
+        headers = find_auth()
+        session['started'] = True
+        session['previous-track'] = get(api_base_url + 'me/player/currently-playing', headers=headers).json()['item']
+        if session['previous-track']:
+            session['previous-track'] = session['previous-track']['uri']
+        session['stop-thread'] = True
+        thr.join()
+        if 'submit' in request.form and request.form['submit'] == 'Request New Song Sequence':
+            return redirect('/find-track')
+        else:
+            for item in track_presentation:
+                if item in request.form and request.form[item] == "Delete sequence":
+                    delete_seq = link_seq[item]
+                    track_sequences.pop(delete_seq)
+                    track_presentation.remove(item)
+                    return redirect('/processing')
+    else:
+        return render_template("Loading_page.html", data=track_presentation)
 
 
 # run the program
 if __name__ == '__main__':
     app.run(host="0.0.0.0", debug=False)
-
 
 
 
