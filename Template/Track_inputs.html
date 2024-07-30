@@ -2,7 +2,13 @@
 {% block title %}First Track{% endblock %}
 
 {% block content %}
-<p> Enter First Track: </p>
+{% if data==1 %}
+<p style="color:#FF0000"> Error: Song is not found </p>
+{% endif %}
+{% if data==2 %}
+<p style="color:#FF0000"> Error: First track already exists! </p>
+{% endif %}
+<p> Please Enter The First Track: </p>
 <form action='#' method='post'>
     <p>Track Name:</p>
     <p><input type="text" name="Leading_song" /></p>
