@@ -4,7 +4,7 @@ The program here will allow the user to automate these successions when using sp
 
 ### How It Works
 This program uses the Spotify Web API, and the user must create their own Spotify API app to gain access to a client ID and a client secret required for the program.
-You can create one from the dashboard at [Spotify for Developers](https://developer.spotify.com/dashboard) (an account is required). Please set redirect url to "http://localhost:5000/callback" and indicate Web API is being used
+You can create one from the dashboard at [Spotify for Developers](https://developer.spotify.com/dashboard) (an account is required). Please add "http://localhost:5000/callback" to Redirect URIs and indicate Web API is being used
  
 Once the client_id and client_secret are provided in a .env file, the user can run main.py.
     
