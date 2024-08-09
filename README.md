@@ -18,3 +18,4 @@ If there are songs previously in the queue, the program will skip tracks until a
 However, the original queue will stay and play after finishing the sequence.
     
 The program is best used in playlist shuffle mode, with the first song of a sequence being in the playlist.
+The vast majority of the program was developed by Aaron Han, last updated on August 2024. 
