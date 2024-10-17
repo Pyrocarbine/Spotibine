@@ -18,6 +18,6 @@ When the first track in a sequence is played, the program will add the following
 If there are songs previously in the queue, the program will skip tracks until a track in the automated song sequence is found.
 However, the original queue will stay and play after finishing the sequence.
     
-The program is best used in playlist shuffle mode, with the first song of a sequence being in the playlist.
+The program is best used in playlist shuffle mode, with only the first song of a sequence in the playlist.
 
 This automation is original and developed by Aaron Han, last updated on August 2024. 
