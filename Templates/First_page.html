@@ -1,0 +1,10 @@
+{% extends "base.html" %}
+
+{% block head %} <link rel="stylesheet" href="{{ url_for('static',filename='styles/First_page.css') }}"> {% endblock %}
+{% block title %} Welcome! {% endblock %}
+
+{% block content %}
+<h2 class="title"> Welcome to my Spotify App! </h2>
+<h4 class="request"> To begin, we will like request some permissions for your Spotify Account </h4>
+<p class="request"> Please &nbsp; <a class="login" href='/login'>Login With Spotify</a></p>
+{% endblock %}

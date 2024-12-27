@@ -1,5 +1,6 @@
 {% extends "base.html" %}
 {% block title %}Following Tracks{% endblock %}
+{% block head %}<link rel="stylesheet" href="{{ url_for('static',filename='styles/Track_continuations.css') }}">{% endblock %}
 
 {% block content %}
 {% if data[1]==1 %}
@@ -8,10 +9,10 @@
 <p> Current Sequence: {{data[0]}}</p>
 <p> Enter Next Track: </p>
 <form action='#' method='post'>
-    <p>Track Name:</p>
+    <p class="info">Track Name:</p>
     <p><input type="text" name="following_song" /></p>
-    <p>Artist:</p>
+    <p class="info"> Artist:</p>
     <p><input type="text" name="following_artist" /></p>
-    <p><input type="submit" value="submit" /></p>
+    <p><input class="submit_track" type="submit" value="submit" /></p>
 </form>
 {% endblock %}

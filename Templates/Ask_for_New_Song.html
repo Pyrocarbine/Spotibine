@@ -1,0 +1,25 @@
+{% extends "base.html" %}
+
+{% block title %}Question{% endblock %}
+{% block head %} <link rel="stylesheet" href="{{ url_for('static',filename='styles/Ask_for_New_Song.css') }}"> {% endblock %}
+
+{% block content %}
+<h3 class="info_title"> Currently saved track sequences:</h3>
+<form action='#' method='post'>
+<ul>
+{% for item in data %}
+    <li>{{item}} &emsp; <input class="extend_button" type="submit" name='{{item}}' value="Extend sequence"/>  &emsp; <input class="delete_button" type="submit" name='{{item}}' value="Delete sequence"/> <br><br></li>
+{% endfor %}
+</ul>
+</form>
+
+
+
+<form action='#' method='post'>
+    <p><input class="add_button" type="submit" name="submit" value="Add New Sequence"/><br></p>
+    <p><input class="launch_button" type="submit" name="submit" value="Save and Launch Automation!" /><br></p>
+</form>
+
+<script src="./javascript/Ask_for_New_Song.js"></script>
+</html>
+{% endblock %}

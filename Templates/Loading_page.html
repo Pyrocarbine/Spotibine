@@ -1,0 +1,20 @@
+{% extends "base.html" %}
+
+{% block head %}<link rel="stylesheet" href="{{ url_for('static',filename='styles/Loading_page.css') }}"> {% endblock %}
+{% block title %}Loading{% endblock %}
+{% block content %}
+<h3> CombineMaster is Running! </h3>
+<p> Here are the track sequences currently saved: </p>
+<form action='#' method='post'>
+<ul>
+{% for item in data %}
+    <li>{{item}} &emsp;  <input class="delete_sequence" type="submit" name='{{item}}' value="Delete sequence"/> <br><br></li>
+{% endfor %}
+</ul>
+</form>
+
+<p> Add new track sequence? </p>
+<form action='#' method='post'>
+    <p><input class="request_sequence" type="submit" name="submit" value="Request New Song Sequence"/><br></p>
+</form>
+{% endblock %}

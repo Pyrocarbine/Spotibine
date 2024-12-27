@@ -1,0 +1,17 @@
+h2.title{
+    padding-left: 12px;
+}
+h4.request{
+    color:#303030;
+    padding-left: 12px;
+}
+p.request{
+    padding-left: 12px;
+}
+a.login{
+    background-color: white;
+    color: #333333;
+    text-decoration: none;
+    padding: 2px 6px 2px 6px;
+    border: 1px solid #333333;
+}

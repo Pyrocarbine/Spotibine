@@ -45,12 +45,10 @@ session['processing-ran'] = False
 
 
 # First Page
-@app.route('/')
+@app.route('/', methods=["POST","GET"])
 def index():
     if 'access_token' not in session:
-        return ("<h3> Welcome to my Spotify App. </h3>" 
-                "<p> To begin, we will like request some permissions for your Spotify Account "
-                "<br><br> Please <a href='/login'>Login With Spotify</a></p>")
+        return render_template("First_page.html")
     else:
         if session['processing-ran']:
             return redirect("/main-page")
@@ -219,7 +217,6 @@ def ask_user_for_more():
         elif next_track['submit'] == "Add New Sequence":
             return redirect('/find-track')
     for item in track_presentation:
-        f = open("song_sequences.txt", "wt")
         # if a sequence is deleted, we must remove that from the track_sequences and track_presentation
         if item in request.form and request.form[item] == "Delete sequence":
             delete_seq = link_seq[item]
@@ -333,9 +330,9 @@ def main_page():
     if request.method == "POST":
         headers = find_auth()
         session['started'] = True
-        session['previous-track'] = get(api_base_url + 'me/player/currently-playing', headers=headers).json()['item']
-        if session['previous-track']:
-            session['previous-track'] = session['previous-track']['uri']
+        session['previous-track'] = get(api_base_url + 'me/player/currently-playing', headers=headers)
+        if session['previous-track'].status_code != 204:
+            session['previous-track'] = (session['previous-track'].json())['item']['uri']
         session['stop-thread'] = True
         thr.join()
         if 'submit' in request.form and request.form['submit'] == 'Request New Song Sequence':
@@ -354,9 +351,6 @@ def main_page():
 # run the program
 if __name__ == '__main__':
     app.run(host="0.0.0.0", debug=False)
-
-
-
 
 
 

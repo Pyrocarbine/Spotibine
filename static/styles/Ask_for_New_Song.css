@@ -1,0 +1,31 @@
+h3.info_title{
+    text-align:left;
+}
+input.add_button{
+    color:white;
+    background-color: #008CBA;
+    display: inline-block;
+    padding: 10px 20px;
+    border: none;
+}
+input.delete_button{
+    color:white;
+    background-color: #f44336;
+    display: inline-block;
+    padding: 10px 16px;
+    border: none;
+}
+input.extend_button{
+    color:white;
+    background-color: #04AA6D;
+    display: inline-block;
+    padding: 10px 16px;
+    border: none;
+}
+input.launch_button{
+    color: white;
+    background-color: #555555;
+    display: inline-block;
+    padding: 10px 16px;
+    border: none;
+}
