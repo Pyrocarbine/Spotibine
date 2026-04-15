@@ -2,11 +2,12 @@ from dotenv import load_dotenv
 import os
 from requests import post, get
 import urllib.parse
-from flask import Flask, redirect, request, jsonify, render_template
+from flask import Flask, redirect, request, jsonify, send_from_directory
 from datetime import datetime
 import time
-# import for loading a html webpage while the api is running
-import threading
+from threading import Event, Lock, Thread
+from typing import Any, Dict, List, Optional
+
 import pickle
 
 load_dotenv()
@@ -15,71 +16,306 @@ client_id = os.getenv("CLIENT_ID")
 client_secret = os.getenv("CLIENT_SECRET")
 redirect_url = "http://localhost:5000/callback"
 
-session = {}
-
 app = Flask(__name__)
 app.secret_key = "53d335f8-571a-4590-a310-1f9579440851"
 api_base_url = "https://api.spotify.com/v1/"
+base_dir = os.path.dirname(os.path.abspath(__file__))
+react_dist_dir = os.path.join(base_dir, "frontend", "dist")
+
+state_lock = Lock()
+stop_event = Event()
+automation_thread: Optional[Thread] = None
+
+app_state: Dict[str, Any] = {
+    "access_token": "",
+    "refresh_token": "",
+    "expires_at": 0.0,
+    "current_track": "",
+    "active_device": "",
+    "selected_sequence": None,
+    "processing_ran": False,
+}
 
 
-# use track presentation to show tracks in HTML file
-track_presentation = []
-open("saved_presentation.p", "ab")
-if os.path.getsize("saved_presentation.p") > 0:
-    with open("saved_presentation.p", "rb") as f:
-        track_presentation = pickle.load(f)
-# stores the sequences of songs we have
-track_sequences = {}
-open("saved_sequences.p", "ab")
-if os.path.getsize("saved_sequences.p") > 0:
-    with open("saved_sequences.p", "rb") as f:
-        track_sequences = pickle.load(f)
-# link track_sequences and track_presentation
-link_seq = {}
-open("saved_link.p", "ab")
-if os.path.getsize("saved_link.p") > 0:
-    with open("saved_link.p", "rb") as f:
-        link_seq = pickle.load(f)
-# if this is true, then '/processing has not been run yet'
-session['processing-ran'] = False
+def load_pickle_file(file_path: str, default_value: Any) -> Any:
+    """Load a pickle file safely and return a default value on failure."""
+    open(file_path, "ab").close()
+    if os.path.getsize(file_path) == 0:
+        return default_value
+    try:
+        with open(file_path, "rb") as file_obj:
+            return pickle.load(file_obj)
+    except (pickle.PickleError, EOFError):
+        return default_value
 
 
-# First Page
-@app.route('/', methods=["POST","GET"])
-def index():
-    if 'access_token' not in session:
-        return render_template("First_page.html")
-    else:
-        if session['processing-ran']:
-            return redirect("/main-page")
+def save_pickle_file(file_path: str, value: Any) -> None:
+    """Persist a Python value to a pickle file."""
+    with open(file_path, "wb") as file_obj:
+        pickle.dump(value, file_obj)
+
+
+def ensure_unique_presentation_name(base_name: str, existing: Dict[str, str]) -> str:
+    """Ensure presentation labels are unique."""
+    if base_name not in existing:
+        return base_name
+
+    counter = 2
+    candidate = f"{base_name} ({counter})"
+    while candidate in existing:
+        counter += 1
+        candidate = f"{base_name} ({counter})"
+    return candidate
+
+
+def set_sequence_presentation(sequence_uri: str, new_value: str) -> str:
+    """Update the presentation label for a given sequence URI."""
+    global track_presentation, link_seq
+
+    old_label = None
+    for label, uri in link_seq.items():
+        if uri == sequence_uri:
+            old_label = label
+            break
+
+    if old_label is not None:
+        link_seq.pop(old_label, None)
+        if old_label in track_presentation:
+            idx = track_presentation.index(old_label)
+            track_presentation[idx] = new_value
         else:
-            return redirect('/ask-user-for-more')
+            track_presentation.append(new_value)
+    else:
+        track_presentation.append(new_value)
+
+    unique_label = ensure_unique_presentation_name(new_value, link_seq)
+    if unique_label != new_value:
+        if new_value in track_presentation:
+            idx = track_presentation.index(new_value)
+            track_presentation[idx] = unique_label
+        else:
+            track_presentation.append(unique_label)
+        new_value = unique_label
+
+    link_seq[new_value] = sequence_uri
+    return new_value
 
 
-# Redirects to login page
-@app.route('/login')
-def login():
-    scope = "user-read-private user-read-email user-read-playback-state user-modify-playback-state user-read-currently-playing"
+def persist_all() -> None:
+    """Persist all sequence-related data to disk."""
+    save_pickle_file(os.path.join(base_dir, "saved_link.p"), link_seq)
+    save_pickle_file(os.path.join(base_dir, "saved_presentation.p"), track_presentation)
+    save_pickle_file(os.path.join(base_dir, "saved_sequences.p"), track_sequences)
 
-    # Dictionary required for authorization
-    params = {
-        'client_id': client_id,
-        'response_type': 'code',
-        'scope': scope,
-        'redirect_uri': redirect_url,
-        'show_dialog': True
+
+def is_authenticated() -> bool:
+    return bool(app_state.get("access_token"))
+
+
+def refresh_access_token_if_needed() -> bool:
+    """Refresh token when near expiration; return True when usable token is available."""
+    if not app_state.get("access_token"):
+        return False
+
+    if datetime.now().timestamp() + 60 <= float(app_state.get("expires_at", 0)):
+        return True
+
+    refresh_token_value = app_state.get("refresh_token")
+    if not refresh_token_value:
+        return False
+
+    req_body = {
+        "grant_type": "refresh_token",
+        "refresh_token": refresh_token_value,
+        "client_id": client_id,
+        "client_secret": client_secret,
+    }
+    response = post("https://accounts.spotify.com/api/token", data=req_body)
+    token_data = response.json()
+
+    if "access_token" not in token_data:
+        return False
+
+    app_state["access_token"] = token_data["access_token"]
+    app_state["expires_at"] = datetime.now().timestamp() + token_data.get("expires_in", 3600)
+    return True
+
+
+def auth_headers() -> Dict[str, str]:
+    return {"Authorization": "Bearer " + app_state["access_token"]}
+
+
+def auth_error_response():
+    if not is_authenticated():
+        return jsonify({"error": "Spotify account is not connected."}), 401
+    if not refresh_access_token_if_needed():
+        return jsonify({"error": "Spotify token has expired. Please reconnect."}), 401
+    return None
+
+
+def spotify_search_track(song_name: str, artist_name: str, headers: Dict[str, str]) -> Optional[Dict[str, Any]]:
+    query = f"{song_name} artist:{artist_name}".strip()
+    response = get(
+        api_base_url + "search",
+        headers=headers,
+        params={"q": query, "type": "track", "limit": 1},
+    )
+    items = response.json().get("tracks", {}).get("items", [])
+    return items[0] if items else None
+
+
+def get_sequence_summary() -> List[Dict[str, Any]]:
+    """Return sequence data in UI-friendly order."""
+    sequences: List[Dict[str, Any]] = []
+    seen = set()
+
+    for label in track_presentation:
+        sequence_uri = link_seq.get(label)
+        if not sequence_uri or sequence_uri not in track_sequences:
+            continue
+        sequences.append(
+            {
+                "id": sequence_uri,
+                "presentation": label,
+                "tracks": track_sequences.get(sequence_uri, []),
+            }
+        )
+        seen.add(sequence_uri)
+
+    for sequence_uri, songs in track_sequences.items():
+        if sequence_uri in seen:
+            continue
+        fallback_label = sequence_uri
+        sequences.append({"id": sequence_uri, "presentation": fallback_label, "tracks": songs})
+
+    return sequences
+
+
+def get_active_device_id(headers: Dict[str, str]) -> Optional[str]:
+    response = get(api_base_url + "me/player/devices", headers=headers)
+    devices = response.json().get("devices", [])
+    for device in devices:
+        if device.get("is_active"):
+            return device.get("id")
+    return None
+
+
+def get_currently_playing_uri(headers: Dict[str, str]) -> Optional[str]:
+    response = get(api_base_url + "me/player/currently-playing", headers=headers)
+    if response.status_code == 204:
+        return None
+    item = response.json().get("item")
+    if not item:
+        return None
+    return item.get("uri")
+
+
+def add_following_tracks(trigger_uri: str) -> None:
+    """Queue continuation tracks for a detected trigger song."""
+    if not refresh_access_token_if_needed():
+        return
+
+    headers = auth_headers()
+    device_id = get_active_device_id(headers)
+    if not device_id:
+        return
+
+    with state_lock:
+        continuation_tracks = list(track_sequences.get(trigger_uri, []))
+
+    if not continuation_tracks:
+        return
+
+    queue_params = {
+        "device_id": device_id,
+        "client_id": client_id,
+        "client_secret": client_secret,
     }
 
-    auth_url = f"https://accounts.spotify.com/authorize?{urllib.parse.urlencode(params)}"
+    for song_uri in continuation_tracks:
+        post(api_base_url + "me/player/queue", headers=headers, params={"uri": song_uri}, data=queue_params)
 
-    return redirect(auth_url)
+    # Preserve existing behavior: bring continuation tracks to the front by cycling queue.
+    currently_playing = trigger_uri
+    current_queue: List[str] = []
+
+    while currently_playing == trigger_uri and not stop_event.is_set():
+        time.sleep(1)
+        currently_playing = get_currently_playing_uri(headers)
+        if not currently_playing:
+            return
+
+    while currently_playing and currently_playing != continuation_tracks[0] and not stop_event.is_set():
+        current_queue.append(currently_playing)
+        post(api_base_url + "me/player/next", headers=headers, data=queue_params)
+        currently_playing = get_currently_playing_uri(headers)
+
+    for uri in current_queue:
+        post(api_base_url + "me/player/queue", headers=headers, params={"uri": uri}, data=queue_params)
 
 
-# gives us important values such as access token and refresh token
-@app.route('/callback')
+def detect_track_worker() -> None:
+    """Background worker that monitors currently playing track."""
+    while not stop_event.is_set():
+        if not refresh_access_token_if_needed():
+            time.sleep(2)
+            continue
+
+        headers = auth_headers()
+        current_uri = get_currently_playing_uri(headers)
+        if not current_uri:
+            time.sleep(2)
+            continue
+
+        should_add_tracks = False
+        with state_lock:
+            if app_state["current_track"] != current_uri:
+                app_state["current_track"] = current_uri
+                should_add_tracks = current_uri in track_sequences
+
+        if should_add_tracks:
+            add_following_tracks(current_uri)
+
+        time.sleep(2)
+
+
+track_presentation = load_pickle_file(os.path.join(base_dir, "saved_presentation.p"), [])
+track_sequences = load_pickle_file(os.path.join(base_dir, "saved_sequences.p"), {})
+link_seq = load_pickle_file(os.path.join(base_dir, "saved_link.p"), {})
+
+
+def build_auth_url() -> str:
+    scope = "user-read-private user-read-email user-read-playback-state user-modify-playback-state user-read-currently-playing"
+    params = {
+        "client_id": client_id,
+        "response_type": "code",
+        "scope": scope,
+        "redirect_uri": redirect_url,
+        "show_dialog": True,
+    }
+    return f"https://accounts.spotify.com/authorize?{urllib.parse.urlencode(params)}"
+
+
+@app.get("/api/health")
+def health():
+    return jsonify({"status": "ok"})
+
+
+@app.get("/api/auth/login-url")
+def login_url():
+    return jsonify({"url": build_auth_url()})
+
+
+@app.get("/login")
+def login():
+    return redirect(build_auth_url())
+
+
+@app.get('/callback')
 def callback():
     if 'error' in request.args:
         return jsonify({"error": request.args['error']})
+
     if 'code' in request.args:
         requirements = {
             'code': request.args['code'],
@@ -89,263 +325,222 @@ def callback():
             'client_secret': client_secret
         }
 
-        response = post("https://accounts.spotify.com/api/token",data=requirements)
+        response = post("https://accounts.spotify.com/api/token", data=requirements)
         token_info = response.json()
 
-        session['access_token'] = token_info['access_token']
-        session['refresh_token'] = token_info['refresh_token']
-        session['expires_at'] = datetime.now().timestamp() + token_info['expires_in']
-        session['current_track'] = ""
+        if "access_token" not in token_info:
+            return jsonify({"error": "Could not retrieve Spotify tokens."}), 400
 
-        return redirect('/ask-user-for-more')
+        app_state["access_token"] = token_info["access_token"]
+        app_state["refresh_token"] = token_info.get("refresh_token", "")
+        app_state["expires_at"] = datetime.now().timestamp() + token_info.get("expires_in", 3600)
+        app_state["current_track"] = ""
+        return redirect('/app?connected=1')
+
+    return jsonify({"error": "Missing authorization code."}), 400
 
 
-# update access token
-@app.route('/refresh-token')
-def refresh_token():
-    if datetime.now().timestamp() > session['expires_at']:
-        req_body = {
-            'grant_type': "refresh_token",
-            'refresh_token': session['refresh_token'],
-            'client_id': client_id,
-            'client_secret': client_secret
+@app.get("/api/auth/status")
+def auth_status():
+    authenticated = is_authenticated() and refresh_access_token_if_needed()
+    return jsonify(
+        {
+            "authenticated": authenticated,
+            "expiresAt": app_state.get("expires_at", 0),
+            "processingRan": app_state.get("processing_ran", False),
+            "selectedSequence": app_state.get("selected_sequence"),
         }
-
-        response = post("https://accounts.spotify.com/api/token", data=req_body)
-        new_token_info = response.json()
-
-        session['access_token'] = new_token_info['access_token']
-        session['expires_at'] = datetime.now().timestamp() + new_token_info['expires_in']
-        return "token updated"
+    )
 
 
-# used to check if access token expired
-@app.route('/refresh')
-def refresh_info():
-    if datetime.now().timestamp() + 3600 > session['expires_at']:
-        refresh_token()
+@app.get("/api/sequences")
+def list_sequences():
+    return jsonify({"sequences": get_sequence_summary()})
 
 
-# give authorization token, required for many get() functions that informs us
-@app.route('/get-Authorization')
-def find_auth():
-    refresh_info()
-    return {"Authorization": "Bearer " + session['access_token']}
+@app.post("/api/sequences")
+def create_sequence():
+    auth_error = auth_error_response()
+    if auth_error:
+        return auth_error
+
+    payload = request.get_json(silent=True) or {}
+    song_name = (payload.get("song") or "").strip()
+    artist_name = (payload.get("artist") or "").strip()
+
+    if not song_name:
+        return jsonify({"error": "Field 'song' is required."}), 400
+
+    headers = auth_headers()
+    track = spotify_search_track(song_name, artist_name, headers)
+    if track is None:
+        return jsonify({"error": "Song not found."}), 404
+
+    sequence_uri = track["uri"]
+    label = track["name"]
+
+    with state_lock:
+        if sequence_uri in track_sequences:
+            return jsonify({"error": "Sequence already exists for this first track."}), 409
+
+        track_sequences[sequence_uri] = []
+        unique_label = ensure_unique_presentation_name(label, link_seq)
+        track_presentation.append(unique_label)
+        link_seq[unique_label] = sequence_uri
+        app_state["selected_sequence"] = sequence_uri
+        persist_all()
+
+    return jsonify({"sequence": {"id": sequence_uri, "presentation": unique_label, "tracks": []}}), 201
 
 
-# track the device id of the active device
-@app.route('/find-device')
-def find_device():
-    refresh_info()
-    headers = find_auth()
+@app.post("/api/sequences/<path:sequence_uri>/tracks")
+def extend_sequence(sequence_uri: str):
+    auth_error = auth_error_response()
+    if auth_error:
+        return auth_error
 
-    response = get(api_base_url + 'me/player/devices', headers=headers)
-    encoded = response.json()
+    payload = request.get_json(silent=True) or {}
+    song_name = (payload.get("song") or "").strip()
+    artist_name = (payload.get("artist") or "").strip()
 
-    for items in encoded['devices']:
-        if items['is_active']:
-            session['active_device'] = items["id"]
-            return redirect("/find-track")
-    return redirect("/find-track")
+    if not song_name:
+        return jsonify({"error": "Field 'song' is required."}), 400
 
+    with state_lock:
+        if sequence_uri not in track_sequences:
+            return jsonify({"error": "Sequence not found."}), 404
 
-# Ask the user for the first track in the series
-@app.route('/find-track', methods=["POST","GET"])
-def find_first_track():
-    refresh_info()
-    headers = find_auth()
-    if request.method == "POST":
-        new_song = request.form["Leading_song"]
-        the_artist = request.form["Leading_artist"]
-        if new_song == 'finished' or new_song == 'done':
-            return track_sequences
-        first_response = get(api_base_url + 'search' + f'?q={new_song} artist:{the_artist}&type=track&limit=1', headers=headers)
-        first_encoded = first_response.json()['tracks']['items']
-        if len(first_encoded) == 0:
-            # if song is not found then send a error message
-            return render_template("Track_inputs.html", data=1)
-        if first_encoded[0]['uri'] in track_sequences:
-            return render_template("Track_inputs.html", data=2)
-        session['first_track'] = first_encoded[0]['uri']
-        track_sequences[session['first_track']] = []
-        # update track presentation
-        track_presentation.append(first_response.json()['tracks']['items'][0]['name'])
-        link_seq[track_presentation[-1]] = session['first_track']
-        return redirect('/find-next-track')
-    else:
-        return render_template("Track_inputs.html",data=0)
+    headers = auth_headers()
+    track = spotify_search_track(song_name, artist_name, headers)
+    if track is None:
+        return jsonify({"error": "Song not found."}), 404
 
+    with state_lock:
+        track_sequences[sequence_uri].append(track["uri"])
 
-# Ask for the following tracks
-@app.route('/find-next-track', methods=["POST", "GET"])
-def find_next_track():
-    refresh_info()
-    headers = find_auth()
-    current_sequence_and_error_found = [track_presentation[-1], 0]
-    if request.method == "POST":
-        next_track = request.form["following_song"]
-        next_artist = request.form["following_artist"]
-        second_response = get(api_base_url + 'search' + f'?q={next_track} artist:{next_artist}&type=track&limit=1',
-                              headers=headers)
-        second_encoded = second_response.json()['tracks']['items']
-        if len(second_encoded) == 0:
-            current_sequence_and_error_found[1] = 1
-            return render_template("Track_continuations.html", data=current_sequence_and_error_found)
-        track_sequences[session['first_track']].append(second_encoded[0]['uri'])
-        link_seq.pop(track_presentation[-1])
-        track_presentation[-1] += " -> "
-        track_presentation[-1] += second_encoded[0]['name']
-        # link track_sequence and track_presentation
-        link_seq[track_presentation[-1]] = session['first_track']
-        return redirect('/ask-user-for-more')
-    else:
-        return render_template("Track_continuations.html", data=current_sequence_and_error_found)
+        current_label = next((label for label, uri in link_seq.items() if uri == sequence_uri), sequence_uri)
+        proposed_label = current_label + " -> " + track["name"]
+        set_sequence_presentation(sequence_uri, proposed_label)
+
+        app_state["selected_sequence"] = sequence_uri
+        persist_all()
+
+        updated_label = next((label for label, uri in link_seq.items() if uri == sequence_uri), sequence_uri)
+        updated_tracks = list(track_sequences[sequence_uri])
+
+    return jsonify(
+        {
+            "sequence": {
+                "id": sequence_uri,
+                "presentation": updated_label,
+                "tracks": updated_tracks,
+            }
+        }
+    )
 
 
-# Ask the user if there are more tracks in the continuation
-@app.route('/ask-user-for-more', methods=["POST", "GET"])
-def ask_user_for_more():
-    if request.method == "POST":
-        next_track = request.form
-    else:
-        return render_template("Ask_for_New_song.html", data=track_presentation)
-
-    if 'submit' in request.form:
-        # if Stop is pressed, activate the auto queue system
-        if next_track['submit'] == "Save and Launch Automation!":
-            return redirect('/processing')
-        elif next_track['submit'] == "Add New Sequence":
-            return redirect('/find-track')
-    for item in track_presentation:
-        # if a sequence is deleted, we must remove that from the track_sequences and track_presentation
-        if item in request.form and request.form[item] == "Delete sequence":
-            delete_seq = link_seq[item]
-            track_sequences.pop(delete_seq)
-            track_presentation.remove(item)
-            return redirect('/ask-user-for-more')
-        # if user requests an additional song for a sequence, then redirect to find-next-track
-        elif item in request.form and request.form[item] == "Add New Song":
-            # remove() and append() used to place the sequence last
-            track_presentation.remove(item)
-            track_presentation.append(item)
-            session['first_track'] = link_seq[item]
-            return redirect('find-next-track')
+@app.post("/api/sequences/<path:sequence_uri>/select")
+def select_sequence(sequence_uri: str):
+    with state_lock:
+        if sequence_uri not in track_sequences:
+            return jsonify({"error": "Sequence not found."}), 404
+        app_state["selected_sequence"] = sequence_uri
+    return jsonify({"selectedSequence": sequence_uri})
 
 
-# if a first song in a sequence is detected, then call add_track()
-@app.route('/detect-track')
-def detect_track():
-    while not session['stop-thread']:
-        refresh_info()
-        headers = find_auth()
+@app.delete("/api/sequences/<path:sequence_uri>")
+def delete_sequence(sequence_uri: str):
+    with state_lock:
+        if sequence_uri not in track_sequences:
+            return jsonify({"error": "Sequence not found."}), 404
 
-        response = get(api_base_url + 'me/player/currently-playing', headers=headers)
-        if response.status_code == 204:
-            time.sleep(2)
-            continue
-        encoded = response.json()
+        track_sequences.pop(sequence_uri, None)
 
-        if session['started'] and session['previous-track'] == encoded['item']['uri']:
-            time.sleep(2)
-            continue
-        if session['current-track'] != encoded['item']['uri']:
-            session['current-track'] = encoded['item']['uri']
+        labels_to_remove = [label for label, uri in link_seq.items() if uri == sequence_uri]
+        for label in labels_to_remove:
+            link_seq.pop(label, None)
+            if label in track_presentation:
+                track_presentation.remove(label)
 
-            if session['current-track'] in track_sequences:
-                add_track()
-        time.sleep(2)
+        if app_state.get("selected_sequence") == sequence_uri:
+            app_state["selected_sequence"] = next(iter(track_sequences), None)
+
+        persist_all()
+
+    return jsonify({"deleted": sequence_uri})
 
 
-# add_track put the following tracks into the queue
-def add_track():
-    refresh_info()
-    headers = find_auth()
-    find_device()
-
-    requirements = {
-        'device_id': session['active_device'],
-        'client_id': client_id,
-        'client_secret': client_secret
-    }
-    encoded = get(api_base_url + 'me/player/currently-playing', headers=headers).json()['item']['uri']
-    current_queue = []
-    for song in track_sequences[session['current-track']]:
-        post(api_base_url + "me/player/queue" + "?uri=" + song, headers=headers, data=requirements)
-    while encoded == session['current-track']:
-        if session['stop-thread']:
-            return
-        time.sleep(1)
-        encoded = get(api_base_url + 'me/player/currently-playing', headers=headers).json()
-        if not encoded['item']:
-            break
-        encoded = encoded['item']['uri']
-    while encoded != track_sequences[session['current-track']][0]:
-        current_queue.append(encoded)
-        # skip to next track in queue
-        post(api_base_url + "me/player/next", headers=headers, data=requirements)
-        encoded = get(api_base_url + 'me/player/currently-playing', headers=headers).json()
-        if not encoded['item']:
-            break
-        encoded = encoded['item']['uri']
-    for uri in current_queue:
-        post(api_base_url + "me/player/queue" + "?uri=" + uri, headers=headers, data=requirements)
+@app.get("/api/automation/status")
+def automation_status():
+    running = automation_thread.is_alive() if automation_thread else False
+    return jsonify(
+        {
+            "running": running,
+            "processingRan": app_state.get("processing_ran", False),
+        }
+    )
 
 
-thr = threading.Thread()
-session['started'] = False
+@app.post("/api/automation/start")
+def start_automation():
+    global automation_thread
+
+    auth_error = auth_error_response()
+    if auth_error:
+        return auth_error
+
+    with state_lock:
+        if not track_sequences:
+            return jsonify({"error": "At least one sequence is required before starting automation."}), 400
+
+        persist_all()
+        app_state["current_track"] = ""
+        app_state["processing_ran"] = True
+
+    if automation_thread and automation_thread.is_alive():
+        return jsonify({"running": True})
+
+    stop_event.clear()
+    automation_thread = Thread(target=detect_track_worker, daemon=True)
+    automation_thread.start()
+    return jsonify({"running": True})
 
 
-# create a thread that will run a process, while our main program is displaying an HTML file
-@app.route('/processing')
-def processing():
-    # run application by calling detect_track
-    session['current-track'] = ""
-    session['stop-thread'] = False
+@app.post("/api/automation/stop")
+def stop_automation():
+    global automation_thread
 
-    # Store all files
-    os.remove("saved_link.p")
-    link_file = open("saved_link.p","wb")
-    pickle.dump(link_seq, link_file)
-    link_file.close()
+    stop_event.set()
+    if automation_thread and automation_thread.is_alive():
+        automation_thread.join(timeout=5)
 
-    os.remove("saved_presentation.p")
-    link_file = open("saved_presentation.p", "wb")
-    pickle.dump(track_presentation, link_file)
-    link_file.close()
-
-    os.remove("saved_sequences.p")
-    link_file = open("saved_sequences.p", "wb")
-    pickle.dump(track_sequences, link_file)
-    link_file.close()
-
-    global thr
-    thr = threading.Thread(target=detect_track)
-    thr.start()
-    return redirect('/main-page')
+    return jsonify({"running": False})
 
 
-# the main page will continue displaying our track sequences, the user can still add or delete sequence
-@app.route('/main-page', methods=['POST', 'GET'])
-def main_page():
-    if request.method == "POST":
-        headers = find_auth()
-        session['started'] = True
-        session['previous-track'] = get(api_base_url + 'me/player/currently-playing', headers=headers)
-        if session['previous-track'].status_code != 204:
-            session['previous-track'] = (session['previous-track'].json())['item']['uri']
-        session['stop-thread'] = True
-        thr.join()
-        if 'submit' in request.form and request.form['submit'] == 'Request New Song Sequence':
-            return redirect('/find-track')
-        else:
-            for item in track_presentation:
-                if item in request.form and request.form[item] == "Delete sequence":
-                    delete_seq = link_seq[item]
-                    track_sequences.pop(delete_seq)
-                    track_presentation.remove(item)
-                    return redirect('/processing')
-    else:
-        return render_template("Loading_page.html", data=track_presentation)
+@app.get("/app")
+def app_entry():
+    if os.path.isdir(react_dist_dir):
+        return send_from_directory(react_dist_dir, "index.html")
+    return jsonify({"message": "React app is not built yet. Run frontend dev server or build frontend/dist."})
+
+
+@app.get("/")
+def root():
+    return redirect("/app")
+
+
+@app.route("/<path:path>")
+def serve_spa(path: str):
+    if path.startswith("api/"):
+        return jsonify({"error": "API route not found."}), 404
+
+    if os.path.isdir(react_dist_dir):
+        target_file = os.path.join(react_dist_dir, path)
+        if os.path.exists(target_file) and os.path.isfile(target_file):
+            return send_from_directory(react_dist_dir, path)
+        return send_from_directory(react_dist_dir, "index.html")
+
+    return jsonify({"message": "React app is not built yet. Run frontend dev server or build frontend/dist."}), 404
 
 
 # run the program
