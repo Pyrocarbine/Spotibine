@@ -14,10 +14,10 @@ load_dotenv()
 
 client_id = os.getenv("CLIENT_ID")
 client_secret = os.getenv("CLIENT_SECRET")
-redirect_url = "http://localhost:5000/callback"
+redirect_url = os.getenv("REDIRECT_URI")
 
 app = Flask(__name__)
-app.secret_key = "53d335f8-571a-4590-a310-1f9579440851"
+app.secret_key = os.getenv("FLASK_SECRET")
 api_base_url = "https://api.spotify.com/v1/"
 base_dir = os.path.dirname(os.path.abspath(__file__))
 react_dist_dir = os.path.join(base_dir, "frontend", "dist")
@@ -38,7 +38,6 @@ app_state: Dict[str, Any] = {
 
 
 def load_pickle_file(file_path: str, default_value: Any) -> Any:
-    """Load a pickle file safely and return a default value on failure."""
     open(file_path, "ab").close()
     if os.path.getsize(file_path) == 0:
         return default_value
@@ -50,13 +49,11 @@ def load_pickle_file(file_path: str, default_value: Any) -> Any:
 
 
 def save_pickle_file(file_path: str, value: Any) -> None:
-    """Persist a Python value to a pickle file."""
     with open(file_path, "wb") as file_obj:
         pickle.dump(value, file_obj)
 
 
 def ensure_unique_presentation_name(base_name: str, existing: Dict[str, str]) -> str:
-    """Ensure presentation labels are unique."""
     if base_name not in existing:
         return base_name
 
@@ -69,7 +66,6 @@ def ensure_unique_presentation_name(base_name: str, existing: Dict[str, str]) ->
 
 
 def set_sequence_presentation(sequence_uri: str, new_value: str) -> str:
-    """Update the presentation label for a given sequence URI."""
     global track_presentation, link_seq
 
     old_label = None
@@ -102,7 +98,6 @@ def set_sequence_presentation(sequence_uri: str, new_value: str) -> str:
 
 
 def persist_all() -> None:
-    """Persist all sequence-related data to disk."""
     save_pickle_file(os.path.join(base_dir, "saved_link.p"), link_seq)
     save_pickle_file(os.path.join(base_dir, "saved_presentation.p"), track_presentation)
     save_pickle_file(os.path.join(base_dir, "saved_sequences.p"), track_sequences)
@@ -113,7 +108,6 @@ def is_authenticated() -> bool:
 
 
 def refresh_access_token_if_needed() -> bool:
-    """Refresh token when near expiration; return True when usable token is available."""
     if not app_state.get("access_token"):
         return False
 
@@ -211,7 +205,6 @@ def get_currently_playing_uri(headers: Dict[str, str]) -> Optional[str]:
 
 
 def add_following_tracks(trigger_uri: str) -> None:
-    """Queue continuation tracks for a detected trigger song."""
     if not refresh_access_token_if_needed():
         return
 
@@ -255,7 +248,6 @@ def add_following_tracks(trigger_uri: str) -> None:
 
 
 def detect_track_worker() -> None:
-    """Background worker that monitors currently playing track."""
     while not stop_event.is_set():
         if not refresh_access_token_if_needed():
             time.sleep(2)
@@ -545,7 +537,8 @@ def serve_spa(path: str):
 
 # run the program
 if __name__ == '__main__':
-    app.run(host="0.0.0.0", debug=False)
+    print(redirect_url)
+    app.run(host="0.0.0.0", port=5001, debug=False)
 
 
 

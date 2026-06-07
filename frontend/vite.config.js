@@ -6,9 +6,9 @@ export default defineConfig({
   server: {
     port: 5173,
     proxy: {
-      "/api": "http://127.0.0.1:5000",
-      "/login": "http://127.0.0.1:5000",
-      "/callback": "http://127.0.0.1:5000"
+      "/api": "http://127.0.0.1:5001",
+      "/login": "http://127.0.0.1:5001",
+      "/callback": "http://127.0.0.1:5001"
     }
   }
 });
